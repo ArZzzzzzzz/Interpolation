@@ -1,0 +1,17 @@
+torch>=2.1.0
+pyyaml>=6.0
+tqdm>=4.65.0
+torchvision>=0.16.0
+diffusers>=0.25.0
+transformers>=4.35.0
+accelerate>=0.25.0
+scikit-image>=0.21.0
+opencv-python>=4.8.0
+Pillow>=10.0.0
+numpy>=1.24.0
+
+# Optional: official LPIPS metric
+# lpips>=0.1.4
+
+# Optional: experiment tracking
+# wandb>=0.16.0

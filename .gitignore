@@ -1,0 +1,27 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Claude
+.claude/
+
+# Checkpoints (too large for git)
+checkpoints/
+
+# Generated videos
+*.mp4
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc
+*.egg-info/
+dist/
+build/

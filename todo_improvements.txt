@@ -1,0 +1,116 @@
+Améliorations à implémenter si résultats epoch 5 insuffisants
+=============================================================
+
+1. V-PREDICTION (au lieu de epsilon)
+-------------------------------------
+Pourquoi : plus stable que epsilon aux grands timesteps, meilleur avec peu de steps DDIM (T_inf=20)
+           évite la divergence "truncated SNR" mentionnée dans le papier
+
+Changement dans train_diffusion.py :
+    # Cible actuelle (epsilon)
+    loss = MSE(eps_pred, noise)
+
+    # Nouvelle cible (v)
+    v_target = sqrt_ab * noise - sqrt_1mab * z_gt
+    loss     = MSE(v_pred, v_target)
+
+Adapter aussi l'inférence DDIM dans models/diffusion.py (x0_pred depuis v).
+
+
+2. MIN-SNR WEIGHTING (gamma=5)
+--------------------------------
+Pourquoi : pondère chaque timestep par son SNR plafonné à gamma=5
+           évite que les t élevés (bruit pur) dominent la loss
+           recommandé par la plupart des papiers récents
+
+Changement dans train_one_epoch :
+    snr  = (sqrt_ab / sqrt_1mab) ** 2
+    w    = torch.clamp(snr, max=5.0)
+    loss = (w * (eps_pred - noise) ** 2).mean()
+
+Combiner avec v-prediction pour meilleur résultat.
+
+
+3. WARM START PIXEL → DIFFUSION (SDEdit style, zéro réentraînement)
+--------------------------------------------------------------------
+Idée : au lieu de partir de bruit pur, partir de l'output du UNetPixel
+       légèrement bruité → le diffusion raffine les détails sans tout reconstruire
+
+Pourquoi ça marche :
+    - Image pixel floue + bruit léger ≈ ce que le modèle voit à t=T//4
+    - Le modèle garde la structure du pixel UNet (bonne)
+    - Et ajoute les détails manquants (flou corrigé)
+    - Zéro réentraînement nécessaire
+
+Pipeline :
+    z_pixel = vae.encode(pixel_unet(I0, I1))      # latent flou
+    t_start = T // 4                               # ex: timestep 50 sur 200
+    z_t     = schedule.q_sample(z_pixel, t_start) # bruite légèrement
+    # DDIM depuis t=50 → t=0 (seulement ~5 steps)
+
+t_start à calibrer empiriquement :
+    trop grand (T//2) → détruit la structure pixel → repart de zéro
+    trop petit (T//8) → pas assez de débruitage → flou toujours présent
+    T//4 = bon point de départ
+
+
+4. STRATÉGIE TEACHER → DISTILLATION (alternative au run actuel)
+-----------------------------------------------------------------
+Idée : réentraîner sans video checkpoint, utiliser T_inf=200 (tous les steps)
+       comme teacher haute qualité, puis distiller à T_inf=10
+
+Étape 1 — Entraîner le teacher :
+    python train_diffusion.py ... --T_inf 200 --video_path ""
+    (pas de video checkpoint = plus rapide par epoch)
+    T_inf=200 à l'inférence = meilleure qualité possible depuis notre T=200
+
+Étape 2 — Distillation progressive :
+    Teacher T_inf=200 → Student T_inf=100 → Student T_inf=50 → T_inf=10
+    Le student apprend à reproduire en 10 steps ce que le teacher fait en 200
+
+Pourquoi ça marche mieux que distiller depuis T_inf=20 :
+    - Teacher T_inf=200 = quasi-optimal pour notre schedule
+    - Ratio 200→10 = ×20 de speedup avec perte minimale
+    - Vs actuel T_inf=20 : teacher pas assez bon pour distiller utilement
+
+Gain final : inférence ×20 plus rapide + qualité teacher préservée
+
+
+5. MODÈLE DE RAFFINEMENT SPÉCIALISÉ (derniers steps seulement)
+---------------------------------------------------------------
+Idée : au lieu d'entraîner sur t in [0, T], entraîner uniquement sur t in [0, T//4]
+       Le modèle apprend exclusivement à affiner une image légèrement bruitée
+       → spécialiste des détails fins, jamais du bruit pur
+
+Pipeline complète :
+    z_pixel  = vae.encode(UNetPixel(I0, I1))    # point de départ : flou mais structuré
+    t_start  = T // 4                            # ex: t=50 sur T=200
+    z_t      = schedule.q_sample(z_pixel, t_start)
+    # DDIM depuis t=50 → t=0 avec le modèle spécialisé (~5-10 steps)
+
+Entraînement :
+    t = torch.randint(0, T // 4, ...)            # t restreint au bas de la plage
+    z_t, noise = schedule.q_sample(z_gt, t)
+    eps_pred = model(z_t, t, z0, z1)
+    loss = MSE(eps_pred, noise)                  # même objectif, plage restreinte
+
+Avantages vs modèle généraliste :
+    - Modèle plus petit possible (moins de capacité nécessaire)
+    - Entraînement 4x plus rapide (t dans [0, T//4] → variance loss plus faible)
+    - Expert des détails fins → meilleure qualité sur les derniers steps
+    - Compatible Min-SNR (les t faibles ont déjà un SNR élevé → poids max naturellement)
+
+Contrainte : nécessite toujours UNetPixel comme point de départ (pas de génération depuis bruit pur)
+Combinaison idéale : UNetPixel (structure) + Raffinement spécialisé (détails)
+
+
+6. ORDRE DE PRIORITÉ
+----------------------
+    [A] Attendre epoch 5, regarder video-checkpoint/epoch_005.mp4 + PSNR
+
+    [B] Si résultats corrects → implémenter warm start pixel (point 3)
+        règle flou + artefacts DDIM simultanément, zéro réentraînement
+
+    [C] Si résultats insuffisants → choisir entre :
+        - Min-SNR + v-prediction (améliore le run actuel)
+        - Stratégie teacher T_inf=200 + distillation (point 4, repart de zéro)

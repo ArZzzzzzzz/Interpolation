@@ -1,0 +1,12 @@
+data_root:    "D:/projet mumltimodal/vimeo_triplet"
+epochs:       100
+batch_size:   16
+lr:           0.0001
+weight_decay: 0.0001
+lambda_perc:  0.1       # poids loss perceptuelle (0 = désactivée)
+base_ch:      64        # canaux de base du UNet
+crop_size:    256
+num_workers:  4
+save_dir:     "checkpoints/pixel"
+eval_baseline: true     # évaluer Baseline A avant l'entraînement
+resume:       null  # chemin vers un checkpoint pour reprendre
